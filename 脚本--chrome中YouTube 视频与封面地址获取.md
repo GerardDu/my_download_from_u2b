@@ -411,3 +411,468 @@ chrome浏览器中，打开扩展程序，找到篡改猴，点击进”详情�
 ### 为什么需要执行用户脚本的权限？
 
 由于用户脚本的两步授权过程，需要额外的权限：`userScripts` 权限和切换开关或开发者模式。 仅有 `userScripts` 权限在安装时不会触发用户警告，反映了 Google 确保用户在运行使用用户脚本的扩展时做出明智决定的意图。
+
+
+
+## 3.脚本修改后的新内容
+
+```
+参考上面两个按钮，给我增加一个按钮，按钮名为“获取yt-dlp封面地址”，点击后复制，实现类似这样的效果，yt-dlp --js-runtimes node --cookies "D:\Temp_ST\31447417-7ada-480f-a85f-cb7e0d5135ec.txt" --skip-download --write-thumbnail --convert-thumbnails jpg -o "%(upload_date)s_%(title)s.%(ext)s" "https://www.youtube.com/watch?v=0VLIrjFdJY8"
+```
+
+下面是整合后的 **YouTube 视频与封面地址获取 v4.0.0 完整脚本**。
+
+保留原来的三个按钮功能，并统一使用左侧固定悬浮布局。
+
+功能包括：
+
+1. **获取视频地址**：生成 yt-dlp 视频下载命令，使用 aria2c 加速。
+2. **获取封面地址**：生成 curl 封面下载命令，下载 `maxresdefault.jpg`。
+3. **获取yt-dlp封面地址**：生成 yt-dlp 封面下载命令，下载封面并转换为 JPG。
+4. 三个按钮均自动获取当前视频 ID。
+5. 点击按钮后自动复制命令，显示「已复制！」。
+6. 页面滚动时按钮位置保持不变。
+7. 支持 YouTube 内部切换视频。
+
+### **完整脚本**
+
+```
+// ==UserScript==
+// @name         YouTube 视频与封面地址获取
+// @namespace    https://www.youtube.com/
+// @version      4.0.0
+// @description  在 YouTube 页面左侧添加视频下载和封面下载命令复制按钮
+// @author       User
+// @match        https://www.youtube.com/*
+// @grant        GM_setClipboard
+// @run-at       document-idle
+// ==/UserScript==
+
+(function () {
+    'use strict';
+
+    // ========================================
+    // 一、配置区域
+    // ========================================
+
+    // yt-dlp Cookies 文件路径
+    const COOKIES_PATH =
+        'D:\\Temp_ST\\31447417-7ada-480f-a85f-cb7e0d5135ec.txt';
+
+    // curl 下载封面的文件名
+    const COVER_FILENAME = 'cover.jpg';
+
+    // 工具栏 ID
+    const TOOLBAR_ID = 'my-youtube-download-toolbar';
+
+    // 工具栏位置
+    const LEFT_POSITION = '18px';
+    const TOP_POSITION = '20vh';
+
+    // ========================================
+    // 二、获取当前视频 ID
+    // ========================================
+
+    function getVideoId() {
+        const url = new URL(location.href);
+
+        // 普通视频页面
+        if (url.pathname === '/watch') {
+            return url.searchParams.get('v');
+        }
+
+        // Shorts 和 Live 页面
+        const match = url.pathname.match(
+            /^\/(?:shorts|live)\/([^/?]+)/
+        );
+
+        return match ? match[1] : null;
+    }
+
+    // ========================================
+    // 三、生成视频下载命令
+    // ========================================
+
+    function generateVideoCommand(videoId) {
+        const videoUrl =
+            `https://www.youtube.com/watch?v=${videoId}`;
+
+        return `yt-dlp -v --js-runtimes node --cookies "${COOKIES_PATH}" -f "bv*+ba/b" --merge-output-format mp4 -o "%(upload_date)s_%(title)s.%(ext)s" --downloader aria2c --downloader-args "aria2c:-c -j 16 -x 16 -s 16 -k 1M" "${videoUrl}"`;
+    }
+
+    // ========================================
+    // 四、生成 curl 封面下载命令
+    // ========================================
+
+    function generateCoverCommand(videoId) {
+        const coverUrl =
+            `https://img.youtube.com/vi/${videoId}/maxresdefault.jpg`;
+
+        return `curl -fL "${coverUrl}" -o "${COVER_FILENAME}"`;
+    }
+
+    // ========================================
+    // 五、生成 yt-dlp 封面下载命令
+    // ========================================
+
+    function generateYtdlpCoverCommand(videoId) {
+        const videoUrl =
+            `https://www.youtube.com/watch?v=${videoId}`;
+
+        return `yt-dlp --js-runtimes node --cookies "${COOKIES_PATH}" --skip-download --write-thumbnail --convert-thumbnails jpg -o "%(upload_date)s_%(title)s.%(ext)s" "${videoUrl}"`;
+    }
+
+    // ========================================
+    // 六、复制到剪贴板
+    // ========================================
+
+    function copyCommand(command, button, originalText) {
+        try {
+            GM_setClipboard(command, 'text', function () {
+                button.textContent = '已复制！';
+                button.classList.add('success');
+
+                setTimeout(() => {
+                    button.textContent = originalText;
+                    button.classList.remove('success');
+                }, 1500);
+            });
+        } catch (error) {
+            console.error(
+                '[YouTube工具] 复制失败：',
+                error
+            );
+
+            alert('复制失败，请检查 Tampermonkey 权限。');
+        }
+    }
+
+    // ========================================
+    // 七、创建左侧固定悬浮工具栏
+    // ========================================
+
+    function createToolbar() {
+
+        const videoId = getVideoId();
+
+        // 非视频页面，移除工具栏
+        if (!videoId) {
+            document.getElementById(TOOLBAR_ID)?.remove();
+            return;
+        }
+
+        // 已经存在完整工具栏，不重复创建
+        const existing = document.getElementById(TOOLBAR_ID);
+
+        if (
+            existing &&
+            existing.shadowRoot?.querySelectorAll('button').length === 3
+        ) {
+            return;
+        }
+
+        // 清理旧工具栏
+        existing?.remove();
+
+        // 创建悬浮容器
+        const toolbar = document.createElement('div');
+
+        toolbar.id = TOOLBAR_ID;
+
+        toolbar.style.cssText = `
+            position: fixed !important;
+            left: ${LEFT_POSITION} !important;
+            top: ${TOP_POSITION} !important;
+            width: auto !important;
+            height: auto !important;
+            min-height: 0 !important;
+            padding: 0 !important;
+            margin: 0 !important;
+            z-index: 2147483647 !important;
+            display: block !important;
+            background: transparent !important;
+            border: none !important;
+            box-shadow: none !important;
+            pointer-events: auto !important;
+        `;
+
+        // 创建 Shadow DOM，隔离 YouTube 页面样式
+        const shadow = toolbar.attachShadow({
+            mode: 'open'
+        });
+
+        // ------------------------------------
+        // 工具栏 CSS 样式
+        // ------------------------------------
+
+        const style = document.createElement('style');
+
+        style.textContent = `
+            .toolbar {
+                display: flex;
+                flex-direction: column;
+                align-items: stretch;
+                gap: 10px;
+                padding: 10px;
+                background: #ffffff;
+                border: 1px solid #e5e5e5;
+                border-radius: 10px;
+                box-shadow: 0 3px 12px rgba(0, 0, 0, 0.15);
+                font-family: Arial, sans-serif;
+            }
+
+            button {
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                box-sizing: border-box;
+                width: 150px;
+                height: 38px;
+                padding: 0 10px;
+                border: none;
+                border-radius: 6px;
+                font-size: 13px;
+                font-weight: 600;
+                cursor: pointer;
+                white-space: nowrap;
+                transition: background 0.2s;
+            }
+
+            /* 视频下载按钮 */
+            .video {
+                background: #065fd4;
+                color: #ffffff;
+            }
+
+            .video:hover {
+                background: #044eae;
+            }
+
+            /* curl 封面下载按钮 */
+            .cover {
+                background: #f2f2f2;
+                color: #0f0f0f;
+            }
+
+            .cover:hover {
+                background: #e5e5e5;
+            }
+
+            /* yt-dlp 封面下载按钮 */
+            .ytdlp-cover {
+                background: #e8eaf6;
+                color: #283593;
+            }
+
+            .ytdlp-cover:hover {
+                background: #d5d9ef;
+            }
+
+            /* 复制成功状态 */
+            button.success {
+                background: #188038;
+                color: #ffffff;
+            }
+        `;
+
+        // ------------------------------------
+        // 创建工具栏主体
+        // ------------------------------------
+
+        const container = document.createElement('div');
+
+        container.className = 'toolbar';
+
+        // ====================================
+        // 按钮一：获取视频地址
+        // ====================================
+
+        const videoButton = document.createElement('button');
+
+        videoButton.className = 'video';
+        videoButton.textContent = '获取视频地址';
+        videoButton.type = 'button';
+
+        videoButton.addEventListener('click', () => {
+            const currentId = getVideoId();
+
+            if (!currentId) {
+                alert('无法获取当前视频 ID。');
+                return;
+            }
+
+            copyCommand(
+                generateVideoCommand(currentId),
+                videoButton,
+                '获取视频地址'
+            );
+        });
+
+        // ====================================
+        // 按钮二：获取封面地址
+        // ====================================
+
+        const coverButton = document.createElement('button');
+
+        coverButton.className = 'cover';
+        coverButton.textContent = '获取封面地址';
+        coverButton.type = 'button';
+
+        coverButton.addEventListener('click', () => {
+            const currentId = getVideoId();
+
+            if (!currentId) {
+                alert('无法获取当前视频 ID。');
+                return;
+            }
+
+            copyCommand(
+                generateCoverCommand(currentId),
+                coverButton,
+                '获取封面地址'
+            );
+        });
+
+        // ====================================
+        // 按钮三：获取 yt-dlp 封面地址
+        // ====================================
+
+        const ytdlpCoverButton = document.createElement('button');
+
+        ytdlpCoverButton.className = 'ytdlp-cover';
+        ytdlpCoverButton.textContent = '获取yt-dlp封面地址';
+        ytdlpCoverButton.type = 'button';
+
+        ytdlpCoverButton.addEventListener('click', () => {
+            const currentId = getVideoId();
+
+            if (!currentId) {
+                alert('无法获取当前视频 ID。');
+                return;
+            }
+
+            copyCommand(
+                generateYtdlpCoverCommand(currentId),
+                ytdlpCoverButton,
+                '获取yt-dlp封面地址'
+            );
+        });
+
+        // ====================================
+        // 添加三个按钮
+        // ====================================
+
+        container.appendChild(videoButton);
+        container.appendChild(coverButton);
+        container.appendChild(ytdlpCoverButton);
+
+        // ====================================
+        // 组装 Shadow DOM
+        // ====================================
+
+        shadow.appendChild(style);
+        shadow.appendChild(container);
+
+        // 添加到 body，不修改 YouTube 导航栏
+        document.body.appendChild(toolbar);
+
+        console.log(
+            '[YouTube工具] 左侧悬浮工具栏创建成功：',
+            videoId
+        );
+    }
+
+    // ========================================
+    // 八、监听页面导航
+    // ========================================
+
+    function updateToolbar() {
+        createToolbar();
+    }
+
+    // 初次加载
+    updateToolbar();
+
+    // YouTube 内部导航
+    document.addEventListener(
+        'yt-navigate-finish',
+        updateToolbar
+    );
+
+    // 浏览器前进和后退
+    window.addEventListener(
+        'popstate',
+        updateToolbar
+    );
+
+    // 监听 DOM 变化
+    const observer = new MutationObserver(() => {
+        if (
+            getVideoId() &&
+            !document.getElementById(TOOLBAR_ID)
+        ) {
+            createToolbar();
+        }
+    });
+
+    observer.observe(document.documentElement, {
+        childList: true,
+        subtree: true
+    });
+
+    // ========================================
+    // 九、处理页面延迟加载
+    // ========================================
+
+    let retryCount = 0;
+
+    const retryTimer = setInterval(() => {
+        createToolbar();
+
+        retryCount++;
+
+        if (
+            document.getElementById(TOOLBAR_ID) ||
+            retryCount >= 20
+        ) {
+            clearInterval(retryTimer);
+        }
+    }, 500);
+
+    console.log('[YouTube工具] v4.0.0 启动成功。');
+
+})();
+```
+
+### **三、三个按钮生成的命令**
+
+| 按钮               | 生成的命令                  |
+| ------------------ | --------------------------- |
+| 获取视频地址       | yt-dlp + aria2c 视频下载    |
+| 获取封面地址       | curl 下载 maxresdefault.jpg |
+| 获取yt-dlp封面地址 | yt-dlp 下载并转换 JPG       |
+
+第三个按钮使用你指定的参数：
+
+```
+yt-dlp --js-runtimes node --cookies "D:\Temp_ST\31447417-7ada-480f-a85f-cb7e0d5135ec.txt" --skip-download --write-thumbnail --convert-thumbnails jpg -o "%(upload_date)s_%(title)s.%(ext)s" "https://www.youtube.com/watch?v=视频ID"
+```
+
+**使用方法：** 替换旧脚本，保存后刷新 YouTube 页面即可。三个按钮会出现在左侧原来的固定位置。
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
